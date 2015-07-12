@@ -9,7 +9,7 @@ use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
 
-class VBulletin extends Command
+class VBulletinPost extends Command
 {
     const LOGIN_PATH             = 'login.php';
     const RSS_PATH               = 'external.php?type=RSS2';
@@ -31,8 +31,8 @@ class VBulletin extends Command
 
     protected function configure()
     {
-        $this->setName("spammer:vbulletin")
-            ->setDescription("Spammer for VBulletin site")
+        $this->setName("spammer:vbulletin:post")
+            ->setDescription("Post Spammer for VBulletin site")
             ->addArgument(
                 'base',
                 InputArgument::REQUIRED,
@@ -163,14 +163,11 @@ class VBulletin extends Command
 
         if (! preg_match('/<a href="((?=.*\bsubscription\.php\b).*)"\s.+<\/a>/', $crawler->html(), $matches)) {
             $output->writeln('<error>Error to get last topic, plase use --last-topic option</error>');
+
             return false;
         }
 
-        $queryString = parse_url($matches[1], PHP_URL_QUERY);
-
-        parse_str($queryString, $parameters);
-
-        foreach ($parameters as $param) {
+        foreach ($this->getQueryStringFromUrl($matches[1]) as $param) {
             if (strstr($lastTopicUrl, $param)) {
 
                 return $param;
@@ -178,6 +175,7 @@ class VBulletin extends Command
         }
 
         $output->writeln('<error>Error to get last topic, plase use --last-topic option</error>');
+
         return false;
     }
 
