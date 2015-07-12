@@ -11,14 +11,18 @@ use Symfony\Component\Console\Output\OutputInterface;
 
 class VBulletin extends Command
 {
-    const LOGIN_PATH        = 'login.php';
-    const RSS_PATH          = 'external.php?type=RSS2';
-    const POST_PATH         = 'showthread.php?t=%d';
+    const LOGIN_PATH             = 'login.php';
+    const RSS_PATH               = 'external.php?type=RSS2';
+    const POST_PATH              = 'showthread.php?t=%d';
+    const NEW_REPLY_FORM_PATH    = 'newreply.php?do=newreply&t=%d&noquote=1';
+    const NEW_REPLY_PATH         = 'newreply.php?do=postreply&t=%d';
 
     protected $base;
     protected $username;
     protected $password;
     protected $message;
+    protected $postTitle;
+    protected $lastTopic;
 
     /**
      * @var Client
@@ -45,7 +49,20 @@ class VBulletin extends Command
                 'p',
                 InputOption::VALUE_REQUIRED,
                 'Your password'
-            )->addOption(
+            )
+            ->addOption(
+                'last-topic',
+                'l',
+                InputOption::VALUE_REQUIRED,
+                'Last topic'
+            )
+            ->addOption(
+                'post-title',
+                't',
+                InputOption::VALUE_REQUIRED,
+                'Post title'
+            )
+            ->addOption(
                 'message',
                 'm',
                 InputOption::VALUE_REQUIRED,
@@ -63,18 +80,23 @@ class VBulletin extends Command
 
         $this->username = $input->getOption('username');
         $this->password = $input->getOption('password');
-
         $this->message = file_get_contents($input->getOption('message'));
+        $this->postTitle = $input->getOption('post-title');
+        $this->lastTopic = $input->getOption('last-topic');
 
         if (! $this->login($output)) {
             return ;
         }
 
-        if (! $lastTopic = $this->getLastTopic($output)) {
-            return ;
+        if (! $this->lastTopic) {
+            if (! $this->lastTopic = $this->getLastTopic($output)) {
+                return ;
+            }
         }
 
-        for ($i = $lastTopic; $i >= 1; $i--) {
+        $output->writeln(sprintf("<comment>Start from Topic ID:</comment> <info>%d</info>\n", $this->lastTopic));
+
+        for ($i = $this->lastTopic; $i >= 1; $i--) {
             $this->createNewPost($output, $i);
         }
 
@@ -125,46 +147,68 @@ class VBulletin extends Command
 
         $output->writeln(sprintf("<comment>Last topic is:</comment> <info>%s</info>", $lastTopicUrl));
 
+        if (preg_match('/(showthread\.php)/', $lastTopicUrl)) {
+            $queries = $this->getQueryStringFromUrl($lastTopicUrl);
+
+            if (array_key_exists('t', $queries)) {
+
+                return $queries['t'];
+            }
+        }
+
         $crawler = $this->client->request(
             'GET',
             $lastTopicUrl
         );
 
-        if (! preg_match('/var RELPATH = "showthread\.php\?t=(.*)";/', $crawler->html(), $matches)) {
-            $output->writeln('<error>Error to get last topic</error>');
+        if (! preg_match('/<a href="((?=.*\bsubscription\.php\b).*)"\s.+<\/a>/', $crawler->html(), $matches)) {
+            $output->writeln('<error>Error to get last topic, plase use --last-topic option</error>');
             return false;
         }
 
-        $output->writeln(sprintf("<comment>Topic ID:</comment> <info>%d</info>\n", $matches[1]));
+        $queryString = parse_url($matches[1], PHP_URL_QUERY);
 
-        return $matches[1];
+        parse_str($queryString, $parameters);
+
+        foreach ($parameters as $param) {
+            if (strstr($lastTopicUrl, $param)) {
+
+                return $param;
+            }
+        }
+
+        $output->writeln('<error>Error to get last topic, plase use --last-topic option</error>');
+        return false;
     }
 
     private function createNewPost(OutputInterface $output, $postId)
     {
-        $postUrl = sprintf($this->base . self::POST_PATH, $postId);
+        $newPostUrl = sprintf($this->base . self::NEW_REPLY_FORM_PATH, $postId);
 
-        $output->writeln(sprintf('<fg=blue>Request %s...</fg=blue>', $postUrl));
+        $output->writeln(sprintf('<fg=blue>Request %s...</fg=blue>', $newPostUrl));
 
-        $crawler = $this->client->request(
-            'GET',
-            $postUrl
-        );
+        $crawler = $this->client->request('GET', $newPostUrl);
 
         if (404 == $this->client->getResponse()->getStatus()) {
-            $output->writeln(sprintf("<error>Post %d not found</error>", $postId));
+            $output->writeln(sprintf("<error>Post %d not found</error> \n", $postId));
         }
 
         $output->writeln('<info>Post found, posting message...</info>');
-        try {
-            $form = $crawler->filter('form[name=quick_reply]')->form();
-        } catch(\Exception $e) {
-            $output->writeln("<error>Post is closed.</error> \n");
+
+        //Get SecurityToken
+        $securityToken = $crawler->filter('input[name="securitytoken"]')->attr('value');
+
+        if (! $securityToken) {
+            $output->writeln("<error>Unable to receive vbulletin security token</error> \n");
+
             return false;
         }
 
-        $this->client->submit($form, [
-            'message' => $this->message
+        $this->client->request('POST', $this->base. sprintf(self::NEW_REPLY_PATH, $postId), [
+            'title'          => ($this->postTitle) ? $this->postTitle : null,
+            'message'        => $this->message,
+            'securitytoken'  => $securityToken,
+            'do'             => 'postreply',
         ]);
 
         if (200 !== $this->client->getResponse()->getStatus()) {
@@ -172,6 +216,16 @@ class VBulletin extends Command
             return false;
         }
 
-        $output->writeln("<info>Message OK</info> \n");
+        $output->writeln(sprintf("<info>Message OK, visit %s</info> \n", (sprintf($this->base . self::POST_PATH, $postId))));
+
+        return true;
+    }
+
+    private function getQueryStringFromUrl($url)
+    {
+        $queryString = parse_url($url, PHP_URL_QUERY);
+        parse_str($queryString, $parameters);
+
+        return $parameters;
     }
 }
